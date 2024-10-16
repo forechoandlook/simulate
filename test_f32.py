@@ -1,7 +1,7 @@
 import torch
 import os
-from simulate import aot_backend
-import simulate as tpu_mlir_jit
+from simulate_f32 import aot_backend
+import simulate_f32 as tpu_mlir_jit
 import pdb
 import torch.nn as nn
 
@@ -11,9 +11,9 @@ import torchvision.models as models
 device = torch.device("cpu")
 
 
-input = torch.randn(1, 3, 224, 224, dtype=torch.float16)
+input = torch.randn(1, 3, 224, 224, dtype=torch.float32)
 
-mod = models.resnet50(torch.float16)
+mod = models.resnet50(torch.float32)
 
 net_d = mod
 net_d.to(device)
