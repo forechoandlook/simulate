@@ -16,14 +16,16 @@ import gc
 import subprocess
 import importlib
 import json
-graph_idx=0
-
+import pickle
 
 from torch.fx import Interpreter
 
-import torch
 import torch.fx
 import json
+
+
+
+graph_idx=0
 
 def _get_disc_decomp():
     from torch._decomp import get_decompositions
@@ -79,54 +81,43 @@ def _get_disc_decomp():
     )
     return decompositions_dict
 
-from torch.fx import Interpreter
+
+
+
+def check_nan_inf_plugin():
+    pass
+
+def global_plugin_pass():
+    pass
 
 
 class TraceInterpreter(Interpreter):
     def __init__(self, module):
         super().__init__(module)
-        self.op_trace = []  # 用于存储每个操作的输入和输出
-    
+        self.op_trace = {}  # 用于存储每个操作的输入和输出
+        self.datas = {}
     def run_node(self, n):
-        # 获取输入，直接使用 n.args 获取传入的参数
-        inputs = [self.fetch_attr(i) if isinstance(i, str) else i for i in n.args]
-
-        # 记录输入的形状或值
-        input_shapes = []
-        for i in inputs:
-            if isinstance(i, torch.Tensor):
-                input_shapes.append(tuple(i.shape))  # 获取张量的形状
-            else:
-                import pdb;pdb.set_trace()
-                input_shapes.append(str(i))  # 对于非张量，记录其值
-        
-        # 执行当前 node 的操作
+        input_names = [i.name if isinstance(i, torch.fx.Node) else i for i in n.args]
         result = super().run_node(n)
-        
-        # 记录输出的形状或值
-        output_shapes = []
-        if isinstance(result, tuple):
-            for r in result:
-                if isinstance(r, torch.Tensor):
-                    output_shapes.append(tuple(r.shape))
-                else:
-                    import pdb;pdb.set_trace()
-                    output_shapes.append(str(r))
-        elif isinstance(result, torch.Tensor):
-            output_shapes.append(tuple(result.shape))
+        node_name = n.name
+        res = {}
+        res_name = []
+        if isinstance(result, tuple) or isinstance(result, list):
+            res = { node_name + f".res{idx}" : value.float().numpy() for idx, value in enumerate(result) }
+            res_name = [node_name + f".res{idx}" for idx in range(len(result))]
         else:
-            import pdb;pdb.set_trace()
-            output_shapes.append(str(result))
-        
-        # 记录输入和输出
-        self.op_trace.append({
-            'node_name': n.name,
-            'op': n.target,
-            'inputs': input_shapes,
-            'outputs': output_shapes,
-        })
-        
-        print(f"Node {n.name}: Inputs: {input_shapes}, Outputs: {output_shapes}")
+            idx = 0
+            res[ node_name + f".res{idx}"] = result.float().numpy()
+            res_name = [node_name + f".res{idx}"]
+        # self.op_trace.append({
+        #     'node_name': n.name,
+        #     'op': node_name,
+        #     'inputs': input_names,
+        #     'outputs': res,
+        # })
+        self.op_trace[n.name] = {"inputs": input_names, "outputs": res_name}
+        if "getitem" not in node_name:
+            self.datas.update(res)
         return result
 
 # def warp_calc(module, idx=0):
@@ -137,15 +128,29 @@ class TraceInterpreter(Interpreter):
 #         return res
 #     return forward
 
+
+def save_2_pickle(fx_g, path):
+    with open(path, 'wb') as f:
+        pickle.dump(fx_g, f)
+
+global_run_idx = 0
+
 def warp_calc(module, idx=0):
     # 使用 TraceInterpreter 来执行并跟踪每个节点
     tracer = TraceInterpreter(module)
     
     def forward(*args):
+        global global_run_idx
         # 运行整个图并跟踪
         res = tracer.run(*args)
+        if global_run_idx < 2:
+            # save all data 
+            import pdb;pdb.set_trace()
+            json.dump(tracer.op_trace, open(f"trace_data_{global_run_idx}.json", "w"))
+            np.savez(f"trace_data_{global_run_idx}.npz", **tracer.datas)
+        global_run_idx += 1
         return res
-    
+
     return forward
 
 def tpu_mlir_compiler(fx_g, example_inputs):
@@ -154,6 +159,9 @@ def tpu_mlir_compiler(fx_g, example_inputs):
     graph_idx += 1
     os.system(f'mkdir -p base{time_str}')
     fx_g.to_folder(f'fx_graph_dumped_{time_str}', "test")
+    # torch.save(fx_g, f'fx_graph_dumped_{time_str}.pth')
+    # fx_g.to_pickle_file(f'fx_graph_dumped_{time_str}.pkl')
+    save_2_pickle(fx_g, f'fx_graph_dumped_{time_str}.pkl')
     print([list(i.shape) for i in example_inputs])
     # return warp_calc(make_boxed_func(fx_g.forward), graph_idx)
     return warp_calc(fx_g)
